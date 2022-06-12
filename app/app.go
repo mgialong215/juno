@@ -16,10 +16,10 @@ import (
 	tmos "github.com/tendermint/tendermint/libs/os"
 	dbm "github.com/tendermint/tm-db"
 
-	"github.com/CosmosContracts/juno/docs"
-	"github.com/CosmosContracts/juno/x/mint"
-	mintkeeper "github.com/CosmosContracts/juno/x/mint/keeper"
-	minttypes "github.com/CosmosContracts/juno/x/mint/types"
+	"github.com/CosmosContracts/juno/v7/docs"
+	"github.com/CosmosContracts/juno/v7/x/mint"
+	mintkeeper "github.com/CosmosContracts/juno/v7/x/mint/keeper"
+	minttypes "github.com/CosmosContracts/juno/v7/x/mint/types"
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/client/grpc/tmservice"
 	"github.com/cosmos/cosmos-sdk/client/rpc"
@@ -27,7 +27,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/server/api"
 	"github.com/cosmos/cosmos-sdk/server/config"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
-	store "github.com/cosmos/cosmos-sdk/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 	"github.com/cosmos/cosmos-sdk/version"
@@ -82,23 +81,30 @@ import (
 	upgradeclient "github.com/cosmos/cosmos-sdk/x/upgrade/client"
 	upgradekeeper "github.com/cosmos/cosmos-sdk/x/upgrade/keeper"
 	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
-	transfer "github.com/cosmos/ibc-go/v2/modules/apps/transfer"
-	ibctransferkeeper "github.com/cosmos/ibc-go/v2/modules/apps/transfer/keeper"
-	ibctransfertypes "github.com/cosmos/ibc-go/v2/modules/apps/transfer/types"
-	ibc "github.com/cosmos/ibc-go/v2/modules/core"
-	ibcclient "github.com/cosmos/ibc-go/v2/modules/core/02-client"
-	ibcclientclient "github.com/cosmos/ibc-go/v2/modules/core/02-client/client"
-	porttypes "github.com/cosmos/ibc-go/v2/modules/core/05-port/types"
-	ibchost "github.com/cosmos/ibc-go/v2/modules/core/24-host"
-	ibckeeper "github.com/cosmos/ibc-go/v2/modules/core/keeper"
+	transfer "github.com/cosmos/ibc-go/v3/modules/apps/transfer"
+	ibctransferkeeper "github.com/cosmos/ibc-go/v3/modules/apps/transfer/keeper"
+	ibctransfertypes "github.com/cosmos/ibc-go/v3/modules/apps/transfer/types"
+	ibc "github.com/cosmos/ibc-go/v3/modules/core"
+	ibcclient "github.com/cosmos/ibc-go/v3/modules/core/02-client"
+	ibcclientclient "github.com/cosmos/ibc-go/v3/modules/core/02-client/client"
+	ibcclienttypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
+	porttypes "github.com/cosmos/ibc-go/v3/modules/core/05-port/types"
+	ibchost "github.com/cosmos/ibc-go/v3/modules/core/24-host"
+	ibckeeper "github.com/cosmos/ibc-go/v3/modules/core/keeper"
 	tmjson "github.com/tendermint/tendermint/libs/json"
 
 	"github.com/CosmWasm/wasmd/x/wasm"
 	wasmclient "github.com/CosmWasm/wasmd/x/wasm/client"
 	wasmkeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
+	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
 	"github.com/prometheus/client_golang/prometheus"
 
-	// this line is used by starport scaffolding # stargate/app/moduleImport
+	ica "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts"
+	icacontrollertypes "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/controller/types"
+	icahost "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/host"
+	icahostkeeper "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/host/keeper"
+	icahosttypes "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/host/types"
+	icatypes "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/types"
 
 	"github.com/tendermint/starport/starport/pkg/cosmoscmd"
 )
@@ -204,8 +210,8 @@ var (
 		stakingtypes.NotBondedPoolName: {authtypes.Burner, authtypes.Staking},
 		govtypes.ModuleName:            {authtypes.Burner},
 		ibctransfertypes.ModuleName:    {authtypes.Minter, authtypes.Burner},
-		// this line is used by starport scaffolding # stargate/app/maccPerms
-		wasm.ModuleName: {authtypes.Burner},
+		icatypes.ModuleName:            nil,
+		wasm.ModuleName:                {authtypes.Burner},
 	}
 )
 
@@ -258,8 +264,11 @@ type App struct {
 	AuthzKeeper      authzkeeper.Keeper
 	FeeGrantKeeper   feegrantkeeper.Keeper
 
+	ICAHostKeeper icahostkeeper.Keeper
+
 	// make scoped keepers public for test purposes
 	ScopedIBCKeeper      capabilitykeeper.ScopedKeeper
+	ScopedICAHostKeeper  capabilitykeeper.ScopedKeeper
 	ScopedTransferKeeper capabilitykeeper.ScopedKeeper
 
 	// this line is used by starport scaffolding # stargate/app/keeperDeclaration
@@ -283,7 +292,6 @@ func New(
 	appOpts servertypes.AppOptions,
 	baseAppOptions ...func(*baseapp.BaseApp),
 ) cosmoscmd.App {
-
 	appCodec := encodingConfig.Marshaler
 	cdc := encodingConfig.Amino
 	interfaceRegistry := encodingConfig.InterfaceRegistry
@@ -298,8 +306,7 @@ func New(
 		minttypes.StoreKey, distrtypes.StoreKey, slashingtypes.StoreKey,
 		govtypes.StoreKey, paramstypes.StoreKey, ibchost.StoreKey, upgradetypes.StoreKey,
 		evidencetypes.StoreKey, ibctransfertypes.StoreKey, capabilitytypes.StoreKey,
-		authzkeeper.StoreKey, feegrant.StoreKey,
-		// this line is used by starport scaffolding # stargate/app/storeKey
+		authzkeeper.StoreKey, feegrant.StoreKey, icahosttypes.StoreKey,
 		wasm.StoreKey,
 	)
 	tkeys := sdk.NewTransientStoreKeys(paramstypes.TStoreKey)
@@ -326,6 +333,7 @@ func New(
 
 	// grant capabilities for the ibc and ibc-transfer modules
 	scopedIBCKeeper := app.CapabilityKeeper.ScopeToModule(ibchost.ModuleName)
+	scopedICAHostKeeper := app.CapabilityKeeper.ScopeToModule(icahosttypes.SubModuleName)
 	scopedTransferKeeper := app.CapabilityKeeper.ScopeToModule(ibctransfertypes.ModuleName)
 	// this line is used by starport scaffolding # stargate/app/scopedKeeper
 	scopedWasmKeeper := app.CapabilityKeeper.ScopeToModule(wasm.ModuleName)
@@ -358,7 +366,6 @@ func New(
 
 	// upgrade handlers
 	cfg := module.NewConfigurator(appCodec, app.MsgServiceRouter(), app.GRPCQueryRouter())
-	app.RegisterUpgradeHandlers(cfg)
 
 	// register the staking hooks
 	// NOTE: stakingKeeper above is passed by reference, so that it will contain these hooks
@@ -382,15 +389,35 @@ func New(
 		AddRoute(paramproposal.RouterKey, params.NewParamChangeProposalHandler(app.ParamsKeeper)).
 		AddRoute(distrtypes.RouterKey, distr.NewCommunityPoolSpendProposalHandler(app.DistrKeeper)).
 		AddRoute(upgradetypes.RouterKey, upgrade.NewSoftwareUpgradeProposalHandler(app.UpgradeKeeper)).
-		AddRoute(ibchost.RouterKey, ibcclient.NewClientProposalHandler(app.IBCKeeper.ClientKeeper))
+		AddRoute(ibcclienttypes.RouterKey, ibcclient.NewClientProposalHandler(app.IBCKeeper.ClientKeeper))
 
 	// Create Transfer Keepers
 	app.TransferKeeper = ibctransferkeeper.NewKeeper(
-		appCodec, keys[ibctransfertypes.StoreKey], app.GetSubspace(ibctransfertypes.ModuleName),
-		app.IBCKeeper.ChannelKeeper, &app.IBCKeeper.PortKeeper,
-		app.AccountKeeper, app.BankKeeper, scopedTransferKeeper,
+		appCodec,
+		keys[ibctransfertypes.StoreKey],
+		app.GetSubspace(ibctransfertypes.ModuleName),
+		app.IBCKeeper.ChannelKeeper,
+		app.IBCKeeper.ChannelKeeper,
+		&app.IBCKeeper.PortKeeper,
+		app.AccountKeeper,
+		app.BankKeeper,
+		scopedTransferKeeper,
 	)
 	transferModule := transfer.NewAppModule(app.TransferKeeper)
+	transferIBCModule := transfer.NewIBCModule(app.TransferKeeper)
+
+	app.ICAHostKeeper = icahostkeeper.NewKeeper(
+		appCodec,
+		keys[icahosttypes.StoreKey],
+		app.GetSubspace(icahosttypes.SubModuleName),
+		app.IBCKeeper.ChannelKeeper,
+		&app.IBCKeeper.PortKeeper,
+		app.AccountKeeper,
+		scopedICAHostKeeper,
+		app.MsgServiceRouter(),
+	)
+	icaModule := ica.NewAppModule(nil, &app.ICAHostKeeper)
+	icaHostIBCModule := icahost.NewIBCModule(app.ICAHostKeeper)
 
 	// Create evidence Keeper for to register the IBC light client misbehaviour evidence route
 	evidenceKeeper := evidencekeeper.NewKeeper(
@@ -438,20 +465,21 @@ func New(
 	}
 	// Create static IBC router, add transfer route, then set and seal it
 	ibcRouter := porttypes.NewRouter()
-	ibcRouter.AddRoute(ibctransfertypes.ModuleName, transferModule)
-	// this line is used by starport scaffolding # ibc/app/router
-	ibcRouter.AddRoute(wasm.ModuleName, wasm.NewIBCHandler(app.wasmKeeper, app.IBCKeeper.ChannelKeeper))
+	ibcRouter.AddRoute(ibctransfertypes.ModuleName, transferIBCModule).
+		AddRoute(wasm.ModuleName, wasm.NewIBCHandler(app.wasmKeeper, app.IBCKeeper.ChannelKeeper)).
+		AddRoute(icahosttypes.SubModuleName, icaHostIBCModule)
 	app.IBCKeeper.SetRouter(ibcRouter)
 
 	app.GovKeeper = govkeeper.NewKeeper(
 		appCodec, keys[govtypes.StoreKey], app.GetSubspace(govtypes.ModuleName), app.AccountKeeper, app.BankKeeper,
 		&stakingKeeper, govRouter,
 	)
+
 	/****  Module Options ****/
 
 	// NOTE: we may consider parsing `appOpts` inside module constructors. For the moment
 	// we prefer to be more strict in what arguments the modules expect.
-	var skipGenesisInvariants = cast.ToBool(appOpts.Get(crisis.FlagSkipGenesisInvariants))
+	skipGenesisInvariants := cast.ToBool(appOpts.Get(crisis.FlagSkipGenesisInvariants))
 
 	// NOTE: Any module instantiated in the module manager that is later modified
 	// must be passed by reference here.
@@ -478,8 +506,9 @@ func New(
 		params.NewAppModule(app.ParamsKeeper),
 		authzmodule.NewAppModule(appCodec, app.AuthzKeeper, app.AccountKeeper, app.BankKeeper, app.interfaceRegistry),
 		transferModule,
+		icaModule,
 		// this line is used by starport scaffolding # stargate/app/appModule
-		wasm.NewAppModule(appCodec, &app.wasmKeeper, app.StakingKeeper),
+		wasm.NewAppModule(appCodec, &app.wasmKeeper, app.StakingKeeper, app.AccountKeeper, app.BankKeeper),
 	)
 
 	// During begin block slashing happens after distr.BeginBlocker so that
@@ -506,6 +535,7 @@ func New(
 		// additional modules
 		ibchost.ModuleName,
 		ibctransfertypes.ModuleName,
+		icatypes.ModuleName,
 		wasm.ModuleName,
 	)
 
@@ -529,6 +559,7 @@ func New(
 		// additional non simd modules
 		ibchost.ModuleName,
 		ibctransfertypes.ModuleName,
+		icatypes.ModuleName,
 		wasm.ModuleName,
 	)
 
@@ -557,6 +588,7 @@ func New(
 		// this line is used by starport scaffolding # stargate/app/initGenesis
 		ibchost.ModuleName,
 		ibctransfertypes.ModuleName,
+		icatypes.ModuleName,
 		wasm.ModuleName,
 	)
 
@@ -568,6 +600,9 @@ func New(
 	app.MountTransientStores(tkeys)
 	app.MountMemoryStores(memKeys)
 
+	// register upgrade
+	app.RegisterUpgradeHandlers(cfg)
+
 	anteHandler, err := NewAnteHandler(
 		HandlerOptions{
 			HandlerOptions: ante.HandlerOptions{
@@ -577,7 +612,7 @@ func New(
 				SignModeHandler: encodingConfig.TxConfig.SignModeHandler(),
 				SigGasConsumer:  ante.DefaultSigVerificationGasConsumer,
 			},
-			IBCChannelkeeper:  app.IBCKeeper.ChannelKeeper,
+			IBCKeeper:         app.IBCKeeper,
 			TxCounterStoreKey: keys[wasm.StoreKey],
 			WasmConfig:        wasmConfig,
 			Cdc:               appCodec,
@@ -593,18 +628,13 @@ func New(
 	app.SetAnteHandler(anteHandler)
 	app.SetEndBlocker(app.EndBlocker)
 
-	upgradeInfo, err := app.UpgradeKeeper.ReadUpgradeInfoFromDisk()
-	if err != nil {
-		panic(err)
-	}
-
-	if upgradeInfo.Name == "moneta" && !app.UpgradeKeeper.IsSkipHeight(upgradeInfo.Height) {
-		storeUpgrades := store.StoreUpgrades{
-			Added: []string{authz.ModuleName, feegrant.ModuleName, wasm.ModuleName},
+	if manager := app.SnapshotManager(); manager != nil {
+		err = manager.RegisterExtensions(
+			wasmkeeper.NewWasmSnapshotter(app.CommitMultiStore(), &app.wasmKeeper),
+		)
+		if err != nil {
+			panic("failed to register snapshot extension: " + err.Error())
 		}
-
-		// configure store loader that checks if version == upgradeHeight and applies store upgrades
-		app.SetStoreLoader(upgradetypes.UpgradeStoreLoader(upgradeInfo.Height, &storeUpgrades))
 	}
 
 	if loadLatest {
@@ -626,6 +656,7 @@ func New(
 	app.ScopedTransferKeeper = scopedTransferKeeper
 	// this line is used by starport scaffolding # stargate/app/beforeInitReturn
 	app.scopedWasmKeeper = scopedWasmKeeper
+	app.ScopedICAHostKeeper = scopedICAHostKeeper
 
 	return app
 }
@@ -751,32 +782,48 @@ func (app *App) RegisterTendermintService(clientCtx client.Context) {
 
 // RegisterUpgradeHandlers returns upgrade handlers
 func (app *App) RegisterUpgradeHandlers(cfg module.Configurator) {
-	app.UpgradeKeeper.SetUpgradeHandler("lupercalia", func(ctx sdk.Context, plan upgradetypes.Plan, vm module.VersionMap) (module.VersionMap, error) {
-		// force an update of validator min commission
-		// we already did this for moneta
-		// but validators could have snuck in changes in the
-		// interim
-		// and via state sync to post-moneta
-		validators := app.StakingKeeper.GetAllValidators(ctx)
-		// hard code this because we don't want
-		// a) a fork or
-		// b) immediate reaction with additional gov props
-		minCommissionRate := sdk.NewDecWithPrec(5, 2)
-		for _, v := range validators {
-			if v.Commission.Rate.LT(minCommissionRate) {
-				if v.Commission.MaxRate.LT(minCommissionRate) {
-					v.Commission.MaxRate = minCommissionRate
-				}
+	// left here for hysterical raisins - we should probably remove
+	// bankBaseKeeper, _ := app.BankKeeper.(bankkeeper.BaseKeeper)
+	// app.UpgradeKeeper.SetUpgradeHandler(veritas.UpgradeName, veritas.CreateUpgradeHandler(app.mm, cfg, &app.StakingKeeper, &bankBaseKeeper))
+	app.UpgradeKeeper.SetUpgradeHandler("multiverse", func(ctx sdk.Context, plan upgradetypes.Plan, vm module.VersionMap) (module.VersionMap, error) {
 
-				v.Commission.Rate = minCommissionRate
-				v.Commission.UpdateTime = ctx.BlockHeader().Time
+		vm[icatypes.ModuleName] = app.mm.Modules[icatypes.ModuleName].ConsensusVersion()
 
-				// call the before-modification hook since we're about to update the commission
-				app.StakingKeeper.BeforeValidatorModified(ctx, v.GetOperator())
+		// create ICS27 Controller submodule params, controller module not enabled.
+		controllerParams := icacontrollertypes.Params{}
 
-				app.StakingKeeper.SetValidator(ctx, v)
-			}
+		// create ICS27 Host submodule params
+		hostParams := icahosttypes.Params{
+			HostEnabled: true,
+			AllowMessages: []string{
+				sdk.MsgTypeURL(&banktypes.MsgSend{}),
+				sdk.MsgTypeURL(&stakingtypes.MsgDelegate{}),
+				sdk.MsgTypeURL(&stakingtypes.MsgBeginRedelegate{}),
+				sdk.MsgTypeURL(&stakingtypes.MsgCreateValidator{}),
+				sdk.MsgTypeURL(&stakingtypes.MsgEditValidator{}),
+				sdk.MsgTypeURL(&distrtypes.MsgWithdrawDelegatorReward{}),
+				sdk.MsgTypeURL(&distrtypes.MsgSetWithdrawAddress{}),
+				sdk.MsgTypeURL(&distrtypes.MsgWithdrawValidatorCommission{}),
+				sdk.MsgTypeURL(&distrtypes.MsgFundCommunityPool{}),
+				sdk.MsgTypeURL(&govtypes.MsgVote{}),
+				sdk.MsgTypeURL(&authz.MsgExec{}),
+				sdk.MsgTypeURL(&authz.MsgGrant{}),
+				sdk.MsgTypeURL(&authz.MsgRevoke{}),
+				// wasm msgs here
+				// note we only support these three for now
+				sdk.MsgTypeURL(&wasmtypes.MsgStoreCode{}),
+				sdk.MsgTypeURL(&wasmtypes.MsgInstantiateContract{}),
+				sdk.MsgTypeURL(&wasmtypes.MsgExecuteContract{}),
+			},
 		}
+
+		// initialize ICS27 module
+		icamodule, correctTypecast := app.mm.Modules[icatypes.ModuleName].(ica.AppModule)
+		if !correctTypecast {
+			panic("mm.Modules[icatypes.ModuleName] is not of type ica.AppModule")
+		}
+		icamodule.InitModule(ctx, controllerParams, hostParams)
+
 		return app.mm.RunMigrations(ctx, cfg, vm)
 	})
 }
@@ -804,7 +851,7 @@ func initParamsKeeper(appCodec codec.BinaryCodec, legacyAmino *codec.LegacyAmino
 	paramsKeeper.Subspace(crisistypes.ModuleName)
 	paramsKeeper.Subspace(ibctransfertypes.ModuleName)
 	paramsKeeper.Subspace(ibchost.ModuleName)
-	// this line is used by starport scaffolding # stargate/app/paramSubspace
+	paramsKeeper.Subspace(icahosttypes.SubModuleName)
 	paramsKeeper.Subspace(wasm.ModuleName)
 
 	return paramsKeeper

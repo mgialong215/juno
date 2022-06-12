@@ -1,3 +1,4 @@
+//go:build norace
 // +build norace
 
 package testutil
@@ -5,7 +6,7 @@ package testutil
 import (
 	"testing"
 
-	"github.com/CosmosContracts/juno/testutil/network"
+	"github.com/CosmosContracts/juno/v7/testutil/network"
 
 	"github.com/stretchr/testify/suite"
 )
